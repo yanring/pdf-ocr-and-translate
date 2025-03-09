@@ -125,6 +125,7 @@ def split_markdown_into_chunks(
 
     This function preserves paragraphs and content structure while ensuring
     chunks don't exceed the maximum token limit for API calls.
+    Sections with heading "References" (or similar) will be skipped.
 
     Args:
         markdown_path: Path to the markdown file
@@ -142,6 +143,24 @@ def split_markdown_into_chunks(
 
     # Filter out empty paragraphs
     paragraphs = [p for p in paragraphs if p.strip()]
+    
+    # Filter out references sections (typically starts with "# References" or similar)
+    in_references_section = False
+    filtered_paragraphs = []
+    for p in paragraphs:
+        # Check if this paragraph is a "References" heading (or similar)
+        if p.strip().startswith("# Reference") or p.strip() == "# References" or p.strip() == "# Bibliography":
+            in_references_section = True
+            continue
+        
+        # If we're in a references section, skip this paragraph
+        if in_references_section:
+            continue
+            
+        # Otherwise, include it
+        filtered_paragraphs.append(p)
+
+    paragraphs = filtered_paragraphs
 
     if by_paragraph:
         # Return each paragraph as a separate chunk
@@ -178,7 +197,7 @@ async def translate_text_openai_async(
     target_language: str,
     model: str = "gpt-4o",
     base_url: Optional[str] = None,
-    max_retries: int = 10,
+    max_retries: int = 100,
     bilingual: bool = True,
     client: Optional[OpenAI] = None,
     verify_ssl: bool = True,
@@ -199,24 +218,18 @@ async def translate_text_openai_async(
     Returns:
         Translated text
     """
-    if bilingual:
-        prompt = f"""Translate the following content into {target_language} and output in bilingual format.
-
-Instructions:
-1. Preserve all markdown formatting (headers, lists, code blocks, etc.)
-2. Do not translate code content, variable names, or technical terms that should remain in their original form
-3. Format the output as follows:
-   - First the translated text in {target_language}
-   - Then the original text immediately after, prefixed with "> " to format as a blockquote in markdown
-4. Keep paragraphs and structure intact
-5. Ensure all links, images, and formatting are preserved
-
-Content to translate:
-
-{text}
-"""
-    else:
-        prompt = f"""Translate the following academic content into {target_language}. 
+    # Skip translation for content that doesn't need translation (images, code blocks, formulas)
+    # Check if the content is an image, a code block, or a LaTeX formula
+    if (
+        text.strip().startswith("![") and text.strip().endswith(")")  # Image
+        or (text.strip().startswith("```") and text.strip().endswith("```"))  # Code block
+        or (text.strip().startswith("$$") and text.strip().endswith("$$"))  # LaTeX formula block
+        or (text.strip().startswith("$") and text.strip().endswith("$") and not text.count("$") > 2)  # Inline LaTeX
+    ):
+        return text  # Return original content without translation
+    
+    # Always ask the model to only generate the translation
+    prompt = f"""Translate the following academic content into {target_language}. 
 Maintain the original formatting including headers, lists, tables, and code blocks.
 Do not translate code content, variable names, or technical terms that should remain in their original form.
 Preserve all markdown syntax including links, images, and formatting.
@@ -255,7 +268,14 @@ Content to translate:
                 temperature=0.7,
             )
 
-            return completion.choices[0].message.content
+            translation = completion.choices[0].message.content
+            
+            # Handle bilingual output format here in the code instead of in the LLM prompt
+            if bilingual:
+                # First the original text, then the translation
+                return f"{text}\n\n{translation}"
+            else:
+                return translation
 
         except Exception as e:
             retry_count += 1
@@ -301,82 +321,6 @@ Content to translate:
                 f"⚠️ Request failed. Retrying ({retry_count}/{max_retries}) after {backoff_time:.1f} seconds..."
             )
             await asyncio.sleep(backoff_time)
-
-
-async def translate_text_mistral_async(
-    text: str,
-    target_language: str,
-    model: str = "mistral-large-latest",
-    api_key: str = None,
-    bilingual: bool = True,
-    client=None,
-    verify_ssl: bool = True,
-) -> str:
-    """
-    Translate text using Mistral AI's API (async version).
-
-    Args:
-        text: Text to translate
-        target_language: Target language (e.g., 'English', 'Chinese')
-        model: Mistral model to use
-        api_key: Mistral API key (if not already set)
-        bilingual: If True, output will contain both original text and translation
-        client: Optional pre-initialized Mistral client
-        verify_ssl: Whether to verify SSL certificates
-
-    Returns:
-        Translated text
-    """
-    # Use provided client or initialize a new one
-    # Note: Mistral client doesn't directly support SSL verification options
-    # We would need to patch the underlying requests session if required
-    if client is None:
-        client = Mistral(api_key=api_key)
-        # Try to set SSL verification if possible
-        if hasattr(client, "_client") and hasattr(client._client, "session"):
-            client._client.session.verify = verify_ssl
-
-    if bilingual:
-        prompt = f"""Translate the following content into {target_language} and output in bilingual format.
-
-Instructions:
-1. Preserve all markdown formatting (headers, lists, code blocks, etc.)
-2. Do not translate code content, variable names, or technical terms that should remain in their original form
-3. Format the output as follows:
-   - First the translated text in {target_language}
-   - Then the original text immediately after, prefixed with "> " to format as a blockquote in markdown
-4. Keep paragraphs and structure intact
-5. Ensure all links, images, and formatting are preserved
-
-Content to translate:
-
-{text}
-"""
-    else:
-        prompt = f"""Translate the following academic content into {target_language}. 
-Maintain the original formatting including headers, lists, tables, and code blocks.
-Do not translate code content, variable names, or technical terms that should remain in their original form.
-Preserve all markdown syntax including links, images, and formatting.
-
-Content to translate:
-
-{text}
-"""
-
-    chat_response = await asyncio.to_thread(
-        client.chat,
-        model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a professional academic translator specializing in technical content.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.1,
-    )
-
-    return chat_response.choices[0].message.content
 
 
 class RateLimiter:
@@ -425,7 +369,7 @@ async def translate_markdown_async(
     model: str = None,
     api_key: str = None,
     base_url: Optional[str] = None,
-    max_retries: int = 10,
+    max_retries: int = 100,
     requests_per_minute: int = 1000,  # Default to maximum 1000 requests per minute
     bilingual: bool = True,
     max_concurrency: int = 10,  # Maximum number of concurrent requests
@@ -437,7 +381,7 @@ async def translate_markdown_async(
     Args:
         markdown_path: Path to the markdown file
         target_language: Target language (e.g., 'English', 'Chinese')
-        api_provider: Translation API provider ('openai' or 'mistral')
+        api_provider: Translation API provider ('openai' only)
         model: Model to use for translation
         api_key: API key for the provider
         base_url: Optional custom API endpoint URL for OpenAI-compatible providers
@@ -452,11 +396,7 @@ async def translate_markdown_async(
     """
     # Set default models
     if model is None:
-        model = (
-            os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4o")
-            if api_provider.lower() == "openai"
-            else "mistral-large-latest"
-        )
+        model = os.getenv("DEFAULT_OPENAI_MODEL", "gpt-4o")
 
     # Create output file path
     output_dir = os.path.dirname(markdown_path)
@@ -470,23 +410,15 @@ async def translate_markdown_async(
     rate_limiter = RateLimiter(requests_per_minute)
 
     # Initialize translation client (reuse for all requests)
-    if api_provider.lower() == "openai":
-        # Configure client with SSL verification option
-        import httpx
+    # Configure client with SSL verification option
+    import httpx
 
-        http_client = httpx.Client(verify=verify_ssl)
-        client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=base_url,
-            http_client=http_client,
-        )
-    elif api_provider.lower() == "mistral":
-        client = Mistral(api_key=api_key)
-        # Try to set SSL verification if possible
-        if hasattr(client, "_client") and hasattr(client._client, "session"):
-            client._client.session.verify = verify_ssl
-    else:
-        raise ValueError(f"Unsupported API provider: {api_provider}")
+    http_client = httpx.Client(verify=verify_ssl)
+    client = OpenAI(
+        api_key=api_key or os.getenv("OPENAI_API_KEY"),
+        base_url=base_url,
+        http_client=http_client,
+    )
 
     # Prepare semaphore for concurrency control
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -502,30 +434,16 @@ async def translate_markdown_async(
             await rate_limiter.acquire()
 
             try:
-                if api_provider.lower() == "openai":
-                    translated = await translate_text_openai_async(
-                        chunk,
-                        target_language,
-                        model,
-                        base_url,
-                        max_retries=max_retries,
-                        bilingual=bilingual,
-                        client=client,
-                        verify_ssl=verify_ssl,
-                    )
-                elif api_provider.lower() == "mistral":
-                    translated = await translate_text_mistral_async(
-                        chunk,
-                        target_language,
-                        model,
-                        api_key,
-                        bilingual=bilingual,
-                        client=client,
-                        verify_ssl=verify_ssl,
-                    )
-                else:
-                    raise ValueError(f"Unsupported API provider: {api_provider}")
-
+                translated = await translate_text_openai_async(
+                    chunk,
+                    target_language,
+                    model,
+                    base_url,
+                    max_retries=max_retries,
+                    bilingual=bilingual,
+                    client=client,
+                    verify_ssl=verify_ssl,
+                )
                 return i, translated
             except Exception as e:
                 print(f"Error translating chunk {i}: {e}")
@@ -584,7 +502,7 @@ def translate_markdown(
     model: str = None,
     api_key: str = None,
     base_url: Optional[str] = None,
-    max_retries: int = 10,
+    max_retries: int = 100,
     requests_per_minute: int = 1000,  # Default to maximum 1000 requests per minute
     bilingual: bool = True,
     max_concurrency: int = 10,  # Maximum number of concurrent requests
@@ -593,12 +511,10 @@ def translate_markdown(
     """
     Translate the content of a markdown file.
 
-    This is a wrapper function that calls the async version.
-
     Args:
         markdown_path: Path to the markdown file
         target_language: Target language (e.g., 'English', 'Chinese')
-        api_provider: Translation API provider ('openai' or 'mistral')
+        api_provider: Translation API provider ('openai' only)
         model: Model to use for translation
         api_key: API key for the provider
         base_url: Optional custom API endpoint URL for OpenAI-compatible providers
@@ -611,43 +527,51 @@ def translate_markdown(
     Returns:
         Path to the translated markdown file
     """
-    # Run the async version in an event loop
     return asyncio.run(
         translate_markdown_async(
-            markdown_path=markdown_path,
-            target_language=target_language,
-            api_provider=api_provider,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            max_retries=max_retries,
-            requests_per_minute=requests_per_minute,
-            bilingual=bilingual,
-            max_concurrency=max_concurrency,
-            verify_ssl=verify_ssl,
+            markdown_path,
+            target_language,
+            api_provider,
+            model,
+            api_key,
+            base_url,
+            max_retries,
+            requests_per_minute,
+            bilingual,
+            max_concurrency,
+            verify_ssl,
         )
     )
 
 
 def main():
-    """Main function to process command line arguments and run the tool."""
-    # Load environment variables
+    """Parse command-line arguments and run PDF OCR and translation."""
+    # Load environment variables from .env file
     load_dotenv()
 
-    # Get default values from environment variables
-    default_target_language = os.getenv("DEFAULT_TARGET_LANGUAGE", "English")
-    default_verify_ssl = os.getenv("VERIFY_SSL", "true").lower() != "false"
-
-    parser = argparse.ArgumentParser(description="PDF OCR and Translation Tool")
-    parser.add_argument("pdf_path", type=str, help="Path to the PDF file")
+    parser = argparse.ArgumentParser(
+        description="PDF OCR and Translation Tool",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "pdf_path", help="Path to the PDF file to process"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="Output directory (defaults to pdf_filename_results)",
+    )
     parser.add_argument(
         "--target-language",
-        "-t",
         type=str,
-        default=default_target_language,
-        help=f"Target language for translation (default: {default_target_language})",
+        default="Chinese",
+        help="Target language for translation (e.g., 'English', 'Chinese')",
     )
-    parser.add_argument("--output-dir", "-o", type=str, help="Custom output directory")
+    parser.add_argument(
+        "--ocr-only",
+        action="store_true",
+        help="Only perform OCR, skip translation",
+    )
     parser.add_argument(
         "--mistral-api-key",
         type=str,
@@ -661,49 +585,41 @@ def main():
     parser.add_argument(
         "--openai-base-url",
         type=str,
-        help="Custom OpenAI API base URL (can also be set via OPENAI_BASE_URL env var)",
+        help="Custom base URL for OpenAI-compatible API endpoints",
     )
     parser.add_argument(
         "--model",
         type=str,
-        help="Model to use for translation (defaults to gpt-4o for OpenAI, mistral-large-latest for Mistral)",
+        help="Model to use for translation (defaults to gpt-4o)",
     )
     parser.add_argument(
         "--api-provider",
         type=str,
-        choices=["openai", "mistral"],
         default="openai",
-        help="API provider for translation (default: openai)",
-    )
-    parser.add_argument(
-        "--ocr-only", action="store_true", help="Only perform OCR without translation"
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug mode for detailed error information",
+        choices=["openai"],
+        help="API provider to use for translation",
     )
     parser.add_argument(
         "--max-retries",
         type=int,
-        default=10,
-        help="Maximum number of retry attempts for failed API requests (default: 10)",
-    )
-    parser.add_argument(
-        "--rate-limit",
-        type=int,
-        default=1000,
-        help="Maximum API requests per minute (default: 1000)",
+        default=100,
+        help="Maximum number of retry attempts for API calls",
     )
     parser.add_argument(
         "--no-bilingual",
         action="store_true",
-        help="Disable bilingual mode (translation only, without original text)",
+        help="Output only translated text without original",
     )
     parser.add_argument(
-        "--concurrency",
+        "--requests-per-minute",
         type=int,
-        default=10,
+        default=1000,
+        help="Maximum API requests per minute",
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=20,
         help="Maximum number of concurrent translation requests (default: 10)",
     )
     parser.add_argument(
@@ -734,51 +650,15 @@ def main():
             api_key = None
             base_url = args.openai_base_url or os.getenv("OPENAI_BASE_URL")
 
-            if args.api_provider.lower() == "openai":
-                api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
-                if not api_key:
-                    raise ValueError(
-                        "OpenAI API key is required for translation. Set it via --openai-api-key or OPENAI_API_KEY env var."
-                    )
-                # Set OpenAI API key
-                os.environ["OPENAI_API_KEY"] = api_key
+            api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "OpenAI API key is required for translation. Set it via --openai-api-key or OPENAI_API_KEY env var."
+                )
+            # Set OpenAI API key
+            os.environ["OPENAI_API_KEY"] = api_key
 
-                # Basic connectivity test if in debug mode
-                if args.debug and base_url:
-                    print(f"Testing connection to {base_url}...")
-                    import requests
-
-                    try:
-                        response = requests.get(
-                            base_url.rstrip("/") + "/health",
-                            timeout=10,
-                            verify=not args.no_verify_ssl,
-                        )
-                        print(
-                            f"API endpoint health check: Status code {response.status_code}"
-                        )
-                    except Exception as e:
-                        print(f"Warning: API endpoint connectivity test failed: {e}")
-                        print("Continuing with translation anyway...")
-
-            elif args.api_provider.lower() == "mistral":
-                api_key = mistral_api_key
-
-            # Determine whether to verify SSL
-            verify_ssl = not args.no_verify_ssl and default_verify_ssl
-
-            # Display translation settings
-            print(f"API rate limit: {args.rate_limit} requests per minute")
-            print(f"Concurrency: {args.concurrency} parallel requests")
-            print(f"Auto-retry: Enabled (max {args.max_retries} attempts)")
-            print(
-                f"SSL verification: {'Disabled' if args.no_verify_ssl else 'Enabled'}"
-            )
-            print(
-                f"Translation mode: {'Translation only' if args.no_bilingual else 'Bilingual (translation + original)'}"
-            )
-
-            # Translate the markdown
+            # Translate markdown to target language
             translate_markdown(
                 markdown_path,
                 args.target_language,
@@ -787,18 +667,17 @@ def main():
                 api_key=api_key,
                 base_url=base_url,
                 max_retries=args.max_retries,
-                requests_per_minute=args.rate_limit,
                 bilingual=not args.no_bilingual,
-                max_concurrency=args.concurrency,
-                verify_ssl=verify_ssl,
+                requests_per_minute=args.requests_per_minute,
+                max_concurrency=args.max_concurrency,
+                verify_ssl=not args.no_verify_ssl,
             )
+
     except Exception as e:
         print(f"Error: {e}")
-        if args.debug:
-            import traceback
+        import traceback
 
-            print("\nDetailed error traceback:")
-            traceback.print_exc()
+        traceback.print_exc()
         sys.exit(1)
 
 
