@@ -169,3 +169,28 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Environment variables
+.env
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Results directories
+results_*/
+test_results/
+
+# PDF files (optional, uncomment if you don't want to track PDF files)
+# *.pdf
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# User-specific files
+.DS_Store
+Thumbs.db
