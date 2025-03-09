@@ -1,6 +1,52 @@
 # PDF OCR and Translation Tool
 
-A powerful tool for extracting text from academic PDFs and translating the content while preserving formatting and images.
+> **Extract markdown from academic PDFs (by Mistral OCR API) and translate (by LLM) content while preserving formatting and images—ideal for researchers and students working with multilingual academic papers.**
+
+## Demo
+
+```markdown
+# Attention Mechanisms in Neural Networks: An Overview
+# 神经网络中的注意力机制：概述
+
+Attention mechanisms in neural networks have become a key component in deep learning. This paper provides an overview of...
+神经网络中的注意力机制已成为深度学习中的关键组成部分。本文概述了...
+
+## 1. Introduction
+## 1. 引言
+
+Attention mechanisms are inspired by the human visual system...
+注意力机制的灵感来源于人类视觉系统...
+```
+
+*Example showing bilingual output format (Chinese translation with English original)*
+
+</td>
+</tr>
+</table>
+
+## How It Works
+
+```mermaid
+graph TD
+    A[Input PDF Document] --> B[OCR Processing]
+    B --> C[Text Extraction]
+    C --> D[Format Preservation]
+    D --> E[Image Extraction]
+    D --> F[Translation]
+    E --> G[Reconstructed Document]
+    F --> G
+    G --> H[Final Markdown Output]
+    
+    style A fill:#f9f9f9,stroke:#333,stroke-width:2px
+    style H fill:#e6f7ff,stroke:#333,stroke-width:2px
+```
+
+1. **Submit PDF** - Upload any academic paper or document
+2. **OCR Processing** - Extract text with high accuracy using Mistral AI
+3. **Preserve Structure** - Maintain original layout, tables, and technical elements
+4. **Image Handling** - Automatically extract and organize document images
+5. **Translation** - Convert to target language while maintaining context
+6. **Output Generation** - Get formatted markdown with optional bilingual content
 
 ## Features
 
